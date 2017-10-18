@@ -4,13 +4,13 @@
 {-# LANGUAGE CPP #-}
 -- | A DB2 backend for @persistent@.
 module Database.Persist.MigrateDB2
-    ( getMigrationStrategy 
+    ( getMigrationStrategy
     ) where
 
 import Control.Arrow
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.Error (ErrorT(..))
+import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.Resource (runResourceT)
 import Data.ByteString (ByteString)
 import Data.Either (partitionEithers)
@@ -37,12 +37,12 @@ tracex _ b = b
 #endif
 
 getMigrationStrategy :: DBType -> MigrationStrategy
-getMigrationStrategy dbtype@DB2 {} = 
+getMigrationStrategy dbtype@DB2 {} =
      MigrationStrategy
-                          { dbmsLimitOffset=decorateSQLWithLimitOffset "LIMIT 99999999" 
+                          { dbmsLimitOffset=decorateSQLWithLimitOffset "LIMIT 99999999"
                            ,dbmsMigrate=migrate'
                            ,dbmsInsertSql=insertSql'
-                           ,dbmsEscape=T.pack . escapeDBName 
+                           ,dbmsEscape=T.pack . escapeDBName
                            ,dbmsType=dbtype
                           }
 getMigrationStrategy dbtype = error $ "DB2: calling with invalid dbtype " ++ show dbtype
@@ -59,13 +59,13 @@ migrate' allDefs getter val = do
     let (newcols, udefs, fdefs) = mkColumns allDefs val
     liftIO $ putStrLn $ "\n\nold="++show old
     liftIO $ putStrLn $ "\n\nfdefs="++show fdefs
-    
+
     let udspair = map udToPair udefs
     case (idClmn, old, partitionEithers old) of
       -- Nothing found, create everything
       ([], [], _) -> do
         let idtxt = case entityPrimary val of
-                Just pdef -> tracex ("found it!!! val=" ++ show val) $ 
+                Just pdef -> tracex ("found it!!! val=" ++ show val) $
                               concat [" CONSTRAINT ", escapeDBName (pkeyName (entityDB val)), " PRIMARY KEY (", intercalate "," $ map (escapeDBName . fieldDB) $ compositeFields pdef, ")"]
                 Nothing   -> tracex ("not found val=" ++ show val) $
                               concat [escapeDBName $ fieldDB $ entityId val
@@ -86,18 +86,18 @@ migrate' allDefs getter val = do
                         map (findTypeOfColumn allDefs name) ucols ]
         let foreigns = tracex ("in migrate' newcols=" ++ show newcols) $ do
               Column { cName=cname, cReference=Just (refTblName, a) } <- newcols
-              tracex ("\n\n111foreigns cname="++show cname++" name="++show name++" refTblName="++show refTblName++" a="++show a) $ 
+              tracex ("\n\n111foreigns cname="++show cname++" name="++show name++" refTblName="++show refTblName++" a="++show a) $
                return $ AlterColumn name (refTblName, addReference allDefs (refName name cname) refTblName cname)
-                 
-        let foreignsAlt = map (\fdef -> let (childfields, parentfields) = unzip (map (\((_,b),(_,d)) -> (b,d)) (foreignFields fdef)) 
+
+        let foreignsAlt = map (\fdef -> let (childfields, parentfields) = unzip (map (\((_,b),(_,d)) -> (b,d)) (foreignFields fdef))
                                         in AlterColumn name (foreignRefTableDBName fdef, AddReference (foreignRefTableDBName fdef) (foreignConstraintNameDBName fdef) childfields parentfields)) fdefs
-        
+
         return $ Right $ map showAlterDb $ addTable : uniques ++ foreigns ++ foreignsAlt
       -- No errors and something found, migrate
       (_, _, ([], old')) -> do
         let excludeForeignKeys (xs,ys) = (map (\c -> case cReference c of
                                                     Just (_,fk) -> case find (\f -> fk == foreignConstraintNameDBName f) fdefs of
-                                                                     Just _ -> tracex ("\n\n\nremoving cos a composite fk="++show fk) $ 
+                                                                     Just _ -> tracex ("\n\n\nremoving cos a composite fk="++show fk) $
                                                                                 c { cReference = Nothing }
                                                                      Nothing -> c
                                                     Nothing -> c) xs,ys)
@@ -126,8 +126,8 @@ findTypeOfColumn allDefs name col =
 
 -- | Helper for 'AddRefence' that finds out the 'entityId'.
 addReference :: [EntityDef] -> DBName -> DBName -> DBName -> AlterColumn
-addReference allDefs fkeyname reftable cname = tracex ("\n\naddreference cname="++show cname++" fkeyname="++show fkeyname++" reftable="++show reftable++" id_="++show id_) $ 
-                                  AddReference reftable fkeyname [cname] [id_] 
+addReference allDefs fkeyname reftable cname = tracex ("\n\naddreference cname="++show cname++" fkeyname="++show fkeyname++" reftable="++show reftable++" id_="++show id_) $
+                                  AddReference reftable fkeyname [cname] [id_]
     where
       id_ = maybe (error $ "Could not find ID of entity " ++ show reftable
                          ++ " (allDefs = " ++ show allDefs ++ ")")
@@ -136,8 +136,8 @@ addReference allDefs fkeyname reftable cname = tracex ("\n\naddreference cname="
                     return (fieldDB (entityId entDef))
 
 data AlterColumn = Change Column
-                 | IsNull 
-                 | NotNull 
+                 | IsNull
+                 | NotNull
                  | Add' Column
                  | Drop
                  | Default String
@@ -171,7 +171,7 @@ getColumns :: (Text -> IO Statement)
                  )
 getColumns getter def = do
     -- Find out ID column.
-    stmtIdClmn <- getter $ T.concat 
+    stmtIdClmn <- getter $ T.concat
                           ["SELECT "
                           ,"colname column_name "
                           ,",nulls is_nullable "
@@ -183,12 +183,12 @@ getColumns getter def = do
                           ,"WHERE tabschema=current_schema "
                           ,"AND tabname=? "
                           ,"AND colname <> ?"]
-  
+
     inter1 <- with (stmtQuery stmtIdClmn vals) ($$ CL.consume)
     ids <- runResourceT $ CL.sourceList inter1 $$ helperClmns -- avoid nested queries
 
     -- Find out all columns.
-    stmtClmns <- getter $ T.concat 
+    stmtClmns <- getter $ T.concat
                           ["SELECT "
                           ,"colname column_name "
                           ,",nulls is_nullable "
@@ -260,7 +260,7 @@ getColumn getter tname [ PersistByteString cname
                                    , npre
                                    , nscl] =
     fmap (either (Left . pack) Right) $
-    runErrorT $ do
+    runExceptT $ do
       -- Default value
       default_ <- case default' of
                     PersistNull   -> return Nothing
@@ -293,7 +293,7 @@ getColumn getter tname [ PersistByteString cname
       ref <- case cntrs of
                [] -> return Nothing
                [[PersistByteString tab, PersistByteString ref, PersistInt64 pos]] ->
-                   tracex ("\n\n\nGBREF "++show (tab,ref,pos)++"\n\n") $ 
+                   tracex ("\n\n\nGBREF "++show (tab,ref,pos)++"\n\n") $
                     return $ Just (DBName $ T.decodeUtf8 tab, DBName $ T.decodeUtf8 ref)
                a1 -> fail $ "DB2.getColumn/getRef: never here error[" ++ show a1 ++ "]"
 
@@ -383,17 +383,17 @@ findAlters tblName allDefs col@(Column name isNull type_ def _defConstraintName 
       case filter ((name ==) . cName) cols of
         [] -> case ref of
                Nothing -> ([(name, Add' col)], [])
-               Just (tname, b) -> let cnstr = tracex ("\n\ncols="++show cols++"\n\n2222findalters new foreignkey col["++showColumn col++"] name["++show name++"] tname["++show tname++"] b["++show b ++ "]") $ 
+               Just (tname, b) -> let cnstr = tracex ("\n\ncols="++show cols++"\n\n2222findalters new foreignkey col["++showColumn col++"] name["++show name++"] tname["++show tname++"] b["++show b ++ "]") $
                                               [addReference allDefs (refName tblName name) tname name]
                                   in (map ((,) name) (Add' col : cnstr), cols)
         Column _ isNull' type_' def' _defConstraintName' _maxLen' ref':_ ->
             let -- Foreign key
                 refDrop = case (ref == ref', ref') of
-                            (False, Just (_, cname)) -> tracex ("\n\n44444findalters dropping foreignkey cname[" ++ show cname ++ "] ref[" ++ show ref ++"]") $ 
+                            (False, Just (_, cname)) -> tracex ("\n\n44444findalters dropping foreignkey cname[" ++ show cname ++ "] ref[" ++ show ref ++"]") $
                                                         [(name, DropReference cname)]
                             _ -> []
                 refAdd  = case (ref == ref', ref) of
-                            (False, Just (tname, cname)) -> tracex ("\n\n33333 findalters foreignkey has changed cname["++show cname++"] name["++show name++"] tname["++show tname++"] ref["++show ref++"] ref'["++show ref' ++ "]") $ 
+                            (False, Just (tname, cname)) -> tracex ("\n\n33333 findalters foreignkey has changed cname["++show cname++"] name["++show name++"] tname["++show tname++"] ref["++show ref++"] ref'["++show ref' ++ "]") $
                                                              [(tname, addReference allDefs (refName tblName name) tname name)]
                             _ -> []
                 -- Type and nullability
@@ -412,7 +412,7 @@ findAlters tblName allDefs col@(Column name isNull type_ def _defConstraintName 
 cmpdef::Maybe Text -> Maybe Text -> Bool
 cmpdef Nothing Nothing = True
 cmpdef (Just def) (Just def') | def==def' = True
-                              | otherwise = 
+                              | otherwise =
         let (a,_)=T.breakOnEnd ":" def'
         in case T.stripSuffix "::" a of
               Just xs -> def==xs
@@ -603,7 +603,7 @@ escapeDBName (DBName s) = '"' : go (T.unpack s)
 insertSql' :: EntityDef -> [PersistValue] -> InsertSqlResult
 insertSql' ent vals =
   case entityPrimary ent of
-    Just _pdef -> 
+    Just _pdef ->
       ISRManyKeys sql vals
         where sql = pack $ concat
                 [ "INSERT INTO "
@@ -614,8 +614,8 @@ insertSql' ent vals =
                 , intercalate "," (map (const "?") $ entityFields ent)
                 , ")"
                 ]
-    Nothing -> 
-      ISRInsertGet doInsert "select IDENTITY_VAL_LOCAL() as last_cod from sysibm.sysdummy1" 
+    Nothing ->
+      ISRInsertGet doInsert "select IDENTITY_VAL_LOCAL() as last_cod from sysibm.sysdummy1"
       where
         doInsert = pack $ concat
           [ "INSERT INTO "
